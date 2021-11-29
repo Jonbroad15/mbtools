@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 clap = "2.33.0"
 rust-htslib = { version = "0.38.2", default-features = false }
+rand = "0.8.3"
 hashbrown = "0.3"
 itertools = "*"
 bio = "*"

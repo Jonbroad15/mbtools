@@ -11,6 +11,7 @@ use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*, bam::
 use bio::alphabets;
 use intervaltree::IntervalTree;
 use core::ops::Range;
+use rand::prelude::*;
 
 //
 pub struct AlignedPair
@@ -229,7 +230,17 @@ fn main() {
                 .arg(Arg::with_name("input-bam")
                     .required(true)
                     .index(1)
-                    .help("the input bam file to process")))
+                    .help("the input bam file to process"))
+                .arg(Arg::with_name("target-coverage")
+                     .short("D")
+                     .long("target-coverage")
+                     .takes_value(true)
+                     .help("downsample alignment file to target coverage"))
+                .arg(Arg::with_name("coverage")
+                     .short("C")
+                     .long("coverage")
+                     .takes_value(true)
+                     .help("starting coverage of bam. Required if downsampling")))
         .subcommand(SubCommand::with_name("read-frequency")
                 .about("calculate the frequency of modified bases per read")
                 .arg(Arg::with_name("probability-threshold")
@@ -265,9 +276,13 @@ fn main() {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
+        let coverage = value_t!(matches, "coverage", f64).unwrap_or(0.0);
+        let target_coverage = value_t!(matches, "target-coverage", f64).unwrap_or(0.0);
         calculate_reference_frequency(threshold,
                                       matches.is_present("collapse-strands"),
-                                      matches.value_of("input-bam").unwrap())
+                                      matches.value_of("input-bam").unwrap(),
+                                      coverage,
+                                      target_coverage)
     }
     
     if let Some(matches) = matches.subcommand_matches("read-frequency") {
@@ -288,7 +303,11 @@ fn main() {
     }
 }
 
-fn calculate_reference_frequency(threshold: f64, collapse_strands: bool, input_bam: &str) {
+fn calculate_reference_frequency(threshold: f64,
+                                collapse_strands: bool,
+                                input_bam: &str,
+                                coverage: f64,
+                                target_coverage: f64) {
     eprintln!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
@@ -298,10 +317,21 @@ fn calculate_reference_frequency(threshold: f64, collapse_strands: bool, input_b
     let mut reference_modifications = HashMap::<(i32, usize, char), (usize, usize)>::new();
 
     //
+    let mut rng = rand::thread_rng();
     let start = Instant::now();
     let mut reads_processed = 0;
+    println!("coverage: {}", coverage);
+    println!("target_coverage: {}", target_coverage);
     for r in bam.records() {
         let record = r.unwrap();
+
+        if target_coverage > 0.0 && coverage > 0.0{
+            let x = target_coverage / coverage;
+            let y: f64 = rng.gen(); // generates a float between 0 and 1
+            if y > x { 
+                continue;
+            }
+        }
 
         if let Some(rm) = ReadModifications::from_bam_record(&record) {
             
