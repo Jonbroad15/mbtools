@@ -268,7 +268,17 @@ fn main() {
                 .arg(Arg::with_name("input-bam")
                     .required(true)
                     .index(1)
-                    .help("the input bam file to process")))
+                    .help("the input bam file to process"))
+                .arg(Arg::with_name("target-coverage")
+                     .short("D")
+                     .long("target-coverage")
+                     .takes_value(true)
+                     .help("downsample alignment file to target coverage"))
+                .arg(Arg::with_name("coverage")
+                     .short("C")
+                     .long("coverage")
+                     .takes_value(true)
+                     .help("starting coverage of bam. Required if downsampling")))
         .get_matches();
 
 
@@ -297,9 +307,13 @@ fn main() {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
+        let coverage = value_t!(matches, "coverage", f64).unwrap_or(0.0);
+        let target_coverage = value_t!(matches, "target-coverage", f64).unwrap_or(0.0);
         calculate_region_frequency(threshold,
                                    matches.value_of("region-bed").unwrap(),
-                                   matches.value_of("input-bam").unwrap())
+                                   matches.value_of("input-bam").unwrap(),
+                                   coverage,
+                                   target_coverage)
     }
 }
 
@@ -320,12 +334,11 @@ fn calculate_reference_frequency(threshold: f64,
     let mut rng = rand::thread_rng();
     let start = Instant::now();
     let mut reads_processed = 0;
-    println!("coverage: {}", coverage);
-    println!("target_coverage: {}", target_coverage);
     for r in bam.records() {
         let record = r.unwrap();
 
-        if target_coverage > 0.0 && coverage > 0.0{
+        // Downsample coverage by randomly skipping reads
+        if target_coverage < coverage && coverage > 0.0{
             let x = target_coverage / coverage;
             let y: f64 = rng.gen(); // generates a float between 0 and 1
             if y > x { 
@@ -429,7 +442,9 @@ fn calculate_read_frequency(threshold: f64, input_bam: &str) {
     eprintln!("Processed {} reads in {:?}. Mean modification frequency: {:.2}", reads_processed, start.elapsed(), summary_frequency);
 }
 
-fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str) {
+fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
+                                coverage: f64,
+                                target_coverage: f64) {
     eprintln!("calculating modification frequency for regions from {} on file {}", region_bed, input_bam);
     
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
@@ -465,12 +480,22 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str)
     }
 
     //
+    let mut rng = rand::thread_rng();
     let start = Instant::now();
     let mut reads_processed = 0;
     for r in bam.records() {
         let record = r.unwrap();
 
         if let Some(rm) = ReadModifications::from_bam_record(&record) {
+
+            // Downsample coverage by randomly skipping reads
+            if target_coverage < coverage && coverage > 0.0{
+                let x = target_coverage / coverage;
+                let y: f64 = rng.gen(); // generates a float between 0 and 1
+                if y > x { 
+                    continue;
+                }
+            }
             
             for call in rm.modification_calls {
                 if call.is_confident(threshold) && call.reference_index.is_some() {
