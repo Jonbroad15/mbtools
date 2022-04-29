@@ -12,6 +12,7 @@ use bio::alphabets;
 use intervaltree::IntervalTree;
 use core::ops::Range;
 use std::collections::HashSet;
+use rand::prelude::*; 
 
 //
 pub struct AlignedPair
@@ -327,7 +328,7 @@ fn main() {
                                    matches.value_of("region-bed").unwrap(),
                                    matches.value_of("input-bam").unwrap(),
                                    matches.is_present("cpg"),
-                                   matches.value_of("reference-genome").unwrap_or("")
+                                   matches.value_of("reference-genome").unwrap_or(""),
                                    coverage,
                                    target_coverage)
     }
