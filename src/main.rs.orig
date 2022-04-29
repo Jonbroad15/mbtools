@@ -11,7 +11,11 @@ use rust_htslib::{bam, faidx, bam::Read, bam::record::Aux, bam::record::Cigar::*
 use bio::alphabets;
 use intervaltree::IntervalTree;
 use core::ops::Range;
+<<<<<<< HEAD
+use rand::prelude::*;
+=======
 use std::collections::HashSet;
+>>>>>>> 4b17fc9dc4722d34718af9eb0c88c693658f52ab
 
 //
 pub struct AlignedPair
@@ -321,15 +325,22 @@ fn main() {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
+<<<<<<< HEAD
         let coverage = value_t!(matches, "coverage", f64).unwrap_or(0.0);
         let target_coverage = value_t!(matches, "target-coverage", f64).unwrap_or(0.0);
         calculate_region_frequency(threshold,
                                    matches.value_of("region-bed").unwrap(),
                                    matches.value_of("input-bam").unwrap(),
-                                   matches.is_present("cpg"),
-                                   matches.value_of("reference-genome").unwrap_or("")
                                    coverage,
                                    target_coverage)
+=======
+
+        calculate_region_frequency(threshold,
+                                   matches.value_of("region-bed").unwrap(),
+                                   matches.value_of("input-bam").unwrap(),
+                                   matches.is_present("cpg"),
+                                   matches.value_of("reference-genome").unwrap_or(""))
+>>>>>>> 4b17fc9dc4722d34718af9eb0c88c693658f52ab
     }
 }
 
@@ -458,9 +469,13 @@ fn calculate_read_frequency(threshold: f64, input_bam: &str) {
     eprintln!("Processed {} reads in {:?}. Mean modification frequency: {:.2}", reads_processed, start.elapsed(), summary_frequency);
 }
 
-fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str, filter_to_cpg: bool, reference_genome: &str,
+<<<<<<< HEAD
+fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
                                 coverage: f64,
                                 target_coverage: f64) {
+=======
+fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str, filter_to_cpg: bool, reference_genome: &str) {
+>>>>>>> 4b17fc9dc4722d34718af9eb0c88c693658f52ab
     eprintln!("calculating modification frequency for regions from {} on file {}", region_bed, input_bam);
     let faidx = match filter_to_cpg {
         true => Some(faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:")),
@@ -509,10 +524,8 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
     for r in bam.records() {
         let record = r.unwrap();
 
-        // if this record is on a chromosome we don't have in memory, load it
-        if filter_to_cpg && record.tid() != curr_chromosome_id {
-            let contig = String::from_utf8_lossy(header_view.tid2name(record.tid() as u32));
-            curr_chromosome_length = header_view.target_len(record.tid() as u32).unwrap() as usize;
+<<<<<<< HEAD
+        if let Some(rm) = ReadModifications::from_bam_record(&record) {
 
             // Downsample coverage by randomly skipping reads
             if target_coverage < coverage && coverage > 0.0{
@@ -522,6 +535,12 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
                     continue;
                 }
             }
+=======
+        // if this record is on a chromosome we don't have in memory, load it
+        if filter_to_cpg && record.tid() != curr_chromosome_id {
+            let contig = String::from_utf8_lossy(header_view.tid2name(record.tid() as u32));
+            curr_chromosome_length = header_view.target_len(record.tid() as u32).unwrap() as usize;
+>>>>>>> 4b17fc9dc4722d34718af9eb0c88c693658f52ab
             
             curr_chromosome_id = record.tid();
             curr_chromosome_seq = faidx.as_ref().expect("faidx not found").fetch_seq_string(contig, 0, curr_chromosome_length).unwrap();
