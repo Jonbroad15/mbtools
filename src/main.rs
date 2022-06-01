@@ -235,16 +235,11 @@ fn main() {
                     .required(true)
                     .index(1)
                     .help("the input bam file to process"))
-                .arg(Arg::with_name("target-coverage")
-                     .short("D")
-                     .long("target-coverage")
+                .arg(Arg::with_name("subsample")
+                     .short("s")
+                     .long("subsample")
                      .takes_value(true)
-                     .help("downsample alignment file to target coverage"))
-                .arg(Arg::with_name("coverage")
-                     .short("C")
-                     .long("coverage")
-                     .takes_value(true)
-                     .help("starting coverage of bam. Required if downsampling")))
+                     .help("subsample alignment file"))
         .subcommand(SubCommand::with_name("read-frequency")
                 .about("calculate the frequency of modified bases per read")
                 .arg(Arg::with_name("probability-threshold")
@@ -284,16 +279,11 @@ fn main() {
                     .required(true)
                     .index(1)
                     .help("the input bam file to process"))
-                .arg(Arg::with_name("target-coverage")
-                     .short("D")
-                     .long("target-coverage")
+                .arg(Arg::with_name("subsample")
+                     .short("s")
+                     .long("subsample")
                      .takes_value(true)
-                     .help("downsample alignment file to target coverage"))
-                .arg(Arg::with_name("coverage")
-                     .short("C")
-                     .long("coverage")
-                     .takes_value(true)
-                     .help("starting coverage of bam. Required if downsampling")))
+                     .help("subsample alignment file"))
         .get_matches();
 
 
@@ -301,13 +291,11 @@ fn main() {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
-        let coverage = value_t!(matches, "coverage", f64).unwrap_or(0.0);
-        let target_coverage = value_t!(matches, "target-coverage", f64).unwrap_or(0.0);
+        let subsample = value_t!(matches, "subsample", f64).unwrap_or(1.0);
         calculate_reference_frequency(threshold,
                                       matches.is_present("collapse-strands"),
                                       matches.value_of("input-bam").unwrap(),
-                                      coverage,
-                                      target_coverage)
+                                      subsample)
     }
     
     if let Some(matches) = matches.subcommand_matches("read-frequency") {
@@ -322,23 +310,20 @@ fn main() {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
-        let coverage = value_t!(matches, "coverage", f64).unwrap_or(0.0);
-        let target_coverage = value_t!(matches, "target-coverage", f64).unwrap_or(0.0);
+        let subsample = value_t!(matches, "subsample", f64).unwrap_or(1.0);
         calculate_region_frequency(threshold,
                                    matches.value_of("region-bed").unwrap(),
                                    matches.value_of("input-bam").unwrap(),
                                    matches.is_present("cpg"),
                                    matches.value_of("reference-genome").unwrap_or(""),
-                                   coverage,
-                                   target_coverage)
+                                   subsample)
     }
 }
 
 fn calculate_reference_frequency(threshold: f64,
                                 collapse_strands: bool,
                                 input_bam: &str,
-                                coverage: f64,
-                                target_coverage: f64) {
+                                subsample: f64) {
     eprintln!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
@@ -355,12 +340,9 @@ fn calculate_reference_frequency(threshold: f64,
         let record = r.unwrap();
 
         // Downsample coverage by randomly skipping reads
-        if target_coverage < coverage && coverage > 0.0{
-            let x = target_coverage / coverage;
-            let y: f64 = rng.gen(); // generates a float between 0 and 1
-            if y > x { 
-                continue;
-            }
+        let y: f64 = rng.gen(); // generates a float between 0 and 1
+        if y > subsample { 
+            continue;
         }
 
         if let Some(rm) = ReadModifications::from_bam_record(&record) {
@@ -460,8 +442,7 @@ fn calculate_read_frequency(threshold: f64, input_bam: &str) {
 }
 
 fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str, filter_to_cpg: bool, reference_genome: &str,
-                                coverage: f64,
-                                target_coverage: f64) {
+                                subsample: f64) {
     eprintln!("calculating modification frequency for regions from {} on file {}", region_bed, input_bam);
     let faidx = match filter_to_cpg {
         true => Some(faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:")),
@@ -510,20 +491,16 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
     for r in bam.records() {
         let record = r.unwrap();
 
+        // Downsample coverage by randomly skipping reads
+        let y: f64 = rng.gen(); // generates a float between 0 and 1
+        if y > subsample { 
+            continue;
+        }
         // if this record is on a chromosome we don't have in memory, load it
         if filter_to_cpg && record.tid() != curr_chromosome_id {
             let contig = String::from_utf8_lossy(header_view.tid2name(record.tid() as u32));
             curr_chromosome_length = header_view.target_len(record.tid() as u32).unwrap() as usize;
 
-            // Downsample coverage by randomly skipping reads
-            if target_coverage < coverage && coverage > 0.0{
-                let x = target_coverage / coverage;
-                let y: f64 = rng.gen(); // generates a float between 0 and 1
-                if y > x { 
-                    continue;
-                }
-            }
-            
             curr_chromosome_id = record.tid();
             curr_chromosome_seq = faidx.as_ref().expect("faidx not found").fetch_seq_string(contig, 0, curr_chromosome_length).unwrap();
             curr_chromosome_seq.make_ascii_uppercase();
