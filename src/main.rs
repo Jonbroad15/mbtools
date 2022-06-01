@@ -27,7 +27,13 @@ fn calculate_aligned_pairs(record: &bam::Record) -> Vec::<AlignedPair> {
     let mut current_read_index :usize = 0;
     let mut current_reference_index :usize = record.pos() as usize;
 
-    for c in record.cigar().iter() {
+    let cigar = record.cigar();
+    if cigar.leading_hardclips() > 0 || cigar.trailing_hardclips() > 0 {
+        eprintln!("Error: cannot process alignments with hardclips");
+        std::process::exit(1);
+    }
+
+    for c in cigar.iter() {
 
         let (aligned, reference_stride, read_stride) = match *c {
             Match(_) | Equal(_) | Diff(_) => (true, 1, 1),
@@ -123,7 +129,6 @@ impl ReadModifications
             return None;
         }
 
-        //println!("Parsing bam record");
         let mut rm = ReadModifications {
             canonical_base: 'x',
             modified_base: 'x',
@@ -239,7 +244,7 @@ fn main() {
                      .short("s")
                      .long("subsample")
                      .takes_value(true)
-                     .help("subsample alignment file"))
+                     .help("subsample alignment file")))
         .subcommand(SubCommand::with_name("read-frequency")
                 .about("calculate the frequency of modified bases per read")
                 .arg(Arg::with_name("probability-threshold")
@@ -275,6 +280,16 @@ fn main() {
                     .takes_value(true)
                     .required(true)
                     .help("bed file containing the regions to calculate modification frequencies for"))
+                .arg(Arg::with_name("classification-threshold")
+                    .short("c")
+                    .long("classification-threshold")
+                    .takes_value(true)
+                    .help("threshold to classify reads as U/X/M using Loyfer criteria"))
+                .arg(Arg::with_name("classification-min-sites")
+                    .short("m")
+                    .long("classification-min-sites")
+                    .takes_value(true)
+                    .help("minimum number of sites needed to classify a read"))
                 .arg(Arg::with_name("input-bam")
                     .required(true)
                     .index(1)
@@ -283,9 +298,11 @@ fn main() {
                      .short("s")
                      .long("subsample")
                      .takes_value(true)
-                     .help("subsample alignment file"))
+                     .help("subsample alignment file")))
         .get_matches();
 
+    // TODO: set to nanopolish default LLR
+    let calling_threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
 
     if let Some(matches) = matches.subcommand_matches("reference-frequency") {
 
@@ -301,17 +318,19 @@ fn main() {
     if let Some(matches) = matches.subcommand_matches("read-frequency") {
 
         // TODO: set to nanopolish default LLR
-        let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
-        calculate_read_frequency(threshold,
+        calculate_read_frequency(calling_threshold,
                                  matches.value_of("input-bam").unwrap())
     }
 
     if let Some(matches) = matches.subcommand_matches("region-frequency") {
 
         // TODO: set to nanopolish default LLR
-        let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
+        let classification_threshold = value_t!(matches, "classification-threshold", f64).unwrap_or(0.25);
+        let classification_min_sites = value_t!(matches, "classification-min-sites", usize).unwrap_or(4);
         let subsample = value_t!(matches, "subsample", f64).unwrap_or(1.0);
-        calculate_region_frequency(threshold,
+        calculate_region_frequency(calling_threshold,
+                                   classification_threshold,
+                                   classification_min_sites,
                                    matches.value_of("region-bed").unwrap(),
                                    matches.value_of("input-bam").unwrap(),
                                    matches.is_present("cpg"),
@@ -441,8 +460,27 @@ fn calculate_read_frequency(threshold: f64, input_bam: &str) {
     eprintln!("Processed {} reads in {:?}. Mean modification frequency: {:.2}", reads_processed, start.elapsed(), summary_frequency);
 }
 
-fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str, filter_to_cpg: bool, reference_genome: &str,
-                                subsample: f64) {
+struct RegionStats {
+    chromosome: String,
+    start: usize,
+    end: usize,
+    mod_calls: usize,
+    total_calls: usize,
+    called_reads: usize,
+    total_prob: f64,
+    u_reads: usize,
+    m_reads: usize,
+    x_reads: usize
+}
+
+fn calculate_region_frequency(call_threshold: f64, 
+                              classification_threshold: f64, 
+                              classification_min_sites: usize, 
+                              region_bed: &str, 
+                              input_bam: &str, 
+                              filter_to_cpg: bool, 
+                              reference_genome: &str,
+                              subsample: f64) {
     eprintln!("calculating modification frequency for regions from {} on file {}", region_bed, input_bam);
     let faidx = match filter_to_cpg {
         true => Some(faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:")),
@@ -469,7 +507,19 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
 
             let region_desc = region_desc_by_chr.entry(tid).or_insert( Vec::new() );
             region_desc.push( (start..end, region_data.len()) );
-            region_data.push( (record[0].to_string(), start, end, 0, 0, 0) );
+            let init = RegionStats {
+                chromosome: record[0].to_string(),
+                start: start,
+                end: end,
+                mod_calls: 0,
+                total_calls: 0,
+                called_reads: 0,
+                total_prob: 0.0,
+                u_reads: 0,
+                m_reads: 0,
+                x_reads: 0 
+            };
+            region_data.push( init );
         }
     }
 
@@ -490,17 +540,19 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
     let mut reads_processed = 0;
     for r in bam.records() {
         let record = r.unwrap();
+        if record.is_unmapped() {
+            continue
+        }
 
         // Downsample coverage by randomly skipping reads
         let y: f64 = rng.gen(); // generates a float between 0 and 1
         if y > subsample { 
             continue;
         }
-        // if this record is on a chromosome we don't have in memory, load it
         if filter_to_cpg && record.tid() != curr_chromosome_id {
             let contig = String::from_utf8_lossy(header_view.tid2name(record.tid() as u32));
             curr_chromosome_length = header_view.target_len(record.tid() as u32).unwrap() as usize;
-
+            
             curr_chromosome_id = record.tid();
             curr_chromosome_seq = faidx.as_ref().expect("faidx not found").fetch_seq_string(contig, 0, curr_chromosome_length).unwrap();
             curr_chromosome_seq.make_ascii_uppercase();
@@ -509,21 +561,22 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
 
         if let Some(rm) = ReadModifications::from_bam_record(&record) {
 
-            // keep track of the intervals that this read spans
-            let mut interval_set = HashSet::<usize>::new();
-                        
+            // keep track of read-level stats per interval
+            let mut read_stats_by_interval = HashMap::new();
+                     
             for call in rm.modification_calls {
-                if call.is_confident(threshold) && call.reference_index.is_some() {
+                if call.is_confident(call_threshold) && call.reference_index.is_some() {
                     let reference_position = call.reference_index.unwrap().clone();
                     
                     // For the cpg filter
                     let mut motif_position = reference_position;
-                    if rm.strand == '-' {
+                    if rm.strand == '-' && reference_position > 0 {
                         motif_position -= 1;
                     }
 
                     // 
                     if filter_to_cpg && 
+                        ( rm.strand == '+' || reference_position > 0 ) &&
                         motif_position < curr_chromosome_length - 1 && 
                         &curr_chromosome_seq[motif_position..motif_position+2] != "CG" {
                         continue
@@ -533,47 +586,47 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
                     if let Some(tree) = interval_trees.get( &(record.tid() as u32)) {
                         for element in tree.query_point(reference_position) {
                             let interval_idx = element.value;
-                            region_data[interval_idx].3 += call.is_modified() as usize;
-                            region_data[interval_idx].4 += 1;
-                            interval_set.insert(interval_idx);
+                            
+                            let is = &mut read_stats_by_interval.entry(interval_idx).or_insert( (0, 0, 0.0) );
+                            is.0 += call.is_modified() as usize;
+                            is.1 += 1;
+                            is.2 += call.get_probability_correct();
                         }
                     }
                 }
             }
+            
+            for (idx, read_data) in read_stats_by_interval {
+                let data = &mut region_data[idx];
+                data.mod_calls += read_data.0;
+                data.total_calls += read_data.1;
+                data.total_prob += read_data.2;
 
-            for idx in interval_set {
-                region_data[idx].5 += 1;
+                data.called_reads += (read_data.1 > 0) as usize;
+            
+                if read_data.1 >= classification_min_sites {
+                    let f = read_data.0 as f64 / read_data.1 as f64;
+                    if f < classification_threshold {
+                        data.u_reads += 1;
+                    } else if f > (1.0 - classification_threshold)  {
+                        data.m_reads += 1;
+                    } else {
+                        data.x_reads += 1;   
+                    }
+                }
             }
         }
 
         reads_processed += 1;
     }
 
-    println!("chromosome\tstart\tend\tnum_called_reads\tmodified_calls\ttotal_calls\tmodification_frequency");
+    println!("chromosome\tstart\tend\tnum_called_reads\tmodified_calls\ttotal_calls\tmodification_frequency\tmean_probability_correct\tu_reads\tm_reads\tx_reads");
     for d in region_data {
-        let f = d.3 as f64 / d.4 as f64;
-        println!("{}\t{}\t{}\t{}\t{}\t{}\t{:.3}", d.0, d.1, d.2, d.5, d.3, d.4, f);
+        let f = d.mod_calls as f64 / d.total_calls as f64;
+        let p = d.total_prob as f64 / d.total_calls as f64;
+        println!("{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{}", 
+            d.chromosome, d.start, d.end, d.called_reads, d.mod_calls, d.total_calls, f, p, d.u_reads, d.m_reads, d.x_reads);
     }
     eprintln!("Processed {} reads in {:?}", reads_processed, start.elapsed());
-
-    /*
-    //
-    let mut sum_reads = 0;
-    let mut sum_modified = 0;
-
-    println!("chromosome\tposition\tstrand\tmodified_reads\ttotal_reads\tmodified_frequency");
-    for key in reference_modifications.keys().sorted() {
-        let (tid, position, strand) = key;
-        let contig = String::from_utf8_lossy(header_view.tid2name(*tid as u32));
-        let (modified_reads, total_reads) = reference_modifications.get( key ).unwrap();
-        println!("{}\t{}\t{}\t{}\t{}\t{:.3}", contig, position, strand, modified_reads, total_reads, *modified_reads as f64 / *total_reads as f64);
-    
-        sum_reads += total_reads;
-        sum_modified += modified_reads;
-    }
-    
-    let mean_depth = sum_reads as f64 / reference_modifications.keys().len() as f64;
-    let mean_frequency = sum_modified as f64 / sum_reads as f64;
-    */
 }
 
