@@ -28,10 +28,10 @@ fn calculate_aligned_pairs(record: &bam::Record) -> Vec::<AlignedPair> {
     let mut current_reference_index :usize = record.pos() as usize;
 
     let cigar = record.cigar();
-    if cigar.leading_hardclips() > 0 || cigar.trailing_hardclips() > 0 {
-        eprintln!("Error: cannot process alignments with hardclips");
-        std::process::exit(1);
-    }
+    //if cigar.leading_hardclips() > 0 || cigar.trailing_hardclips() > 0 {
+        //eprintln!("Error: cannot process alignments with hardclips");
+        //std::process::exit(1);
+    //}
 
     for c in cigar.iter() {
 
